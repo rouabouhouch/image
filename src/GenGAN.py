@@ -132,7 +132,9 @@ class GenGAN:
 
         if loadFromFile and os.path.isfile(self.filename):
             print("GenGAN: loading", self.filename)
-            self.netG = torch.load(self.filename).to(device)
+            self.netG = torch.load(self.filename, map_location='cpu')
+
+
             self.netG.eval()
 
         src_transform = transforms.Compose([
