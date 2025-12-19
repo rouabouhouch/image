@@ -20,12 +20,28 @@ class GenNeirest:
     def __init__(self, videoSkeTgt):
         self.videoSkeletonTarget = videoSkeTgt
 
-    def generate(self, ske):           
-        """ generator of image from skeleton """
-        # TP-TODO
-        empty = np.ones((64,64, 3), dtype=np.uint8)
-        return empty
+    def generate(self, ske):
+        """
+        Generate an image from the closest skeleton in the target video.
+        Uses Skeleton.distance() to find nearest neighbor.
+        """
+        min_dist = float('inf')
+        closest_idx = 0
 
+        # Loop over all skeletons in the target VideoSkeleton
+        for idx, tgt_ske in enumerate(self.videoSkeletonTarget.ske):
+            dist = ske.distance(tgt_ske)
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = idx
 
+        # Load corresponding image
+        img = self.videoSkeletonTarget.readImage(closest_idx)
+        if img is None:
+            # fallback red image if reading fails
+            img = np.zeros((256, 256, 3), dtype=np.uint8)
+            img[:, :] = (0, 0, 255)
+        else:
+            img = img.astype(np.float32) / 255.0  # normalize to [0,1]
 
-
+        return img

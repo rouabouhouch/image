@@ -27,6 +27,7 @@ torch.set_default_dtype(torch.float32)
 class SkeToImageTransform:
     def __init__(self, image_size):
         self.imsize = image_size
+        
 
     def __call__(self, ske):
         #image = Image.new('RGB', (self.imsize, self.imsize), (255, 255, 255))
@@ -111,17 +112,28 @@ class GenNNSke26ToImage(nn.Module):
         super().__init__()
         self.input_dim = Skeleton.reduced_dim
         self.model = nn.Sequential(
-            # TP-TODO
+            nn.Flatten(),
+            nn.Linear(self.input_dim, 256),
+            nn.ReLU(True),
+            nn.Linear(256, 512),
+            nn.ReLU(True),
+            nn.Linear(512, 1024),
+            nn.ReLU(True),
+            nn.Linear(1024, 3*64*64),
+            nn.Tanh()
         )
         print(self.model)
 
     def forward(self, z):
         img = self.model(z)
+        img = img.view(z.size(0), 3, 64, 64)
         return img
 
 
 
 
+
+# --- GenNNSkeImToImage ---
 class GenNNSkeImToImage(nn.Module):
     """ class that Generate a new image from from THE IMAGE OF the new skeleton posture
        SkeletonImage is an image with the skeleton drawed on it
@@ -129,9 +141,11 @@ class GenNNSkeImToImage(nn.Module):
     """
     def __init__(self):
         super().__init__()
-        self.input_dim = Skeleton.reduced_dim
         self.model = nn.Sequential(
-            # TP-TODO
+            nn.Conv2d(3, 64, 4, 2, 1), nn.BatchNorm2d(64), nn.ReLU(True),      # 64x32x32
+            nn.Conv2d(64, 128, 4, 2, 1), nn.BatchNorm2d(128), nn.ReLU(True),   # 128x16x16
+            nn.ConvTranspose2d(128, 64, 4, 2, 1), nn.BatchNorm2d(64), nn.ReLU(True), # 64x32x32
+            nn.ConvTranspose2d(64, 3, 4, 2, 1), nn.Tanh()                       # 3x64x64
         )
         print(self.model)
 
@@ -150,18 +164,20 @@ class GenVanillaNN():
     """
     def __init__(self, videoSke, loadFromFile=False, optSkeOrImage=1):
         image_size = 64
-        if optSkeOrImage==1:        # skeleton_dim26 to image
+        if optSkeOrImage==1:  # skeleton_dim26 to image
             self.netG = GenNNSke26ToImage()
-            src_transform = transforms.Compose([ transforms.ToTensor(),
-                                                 ])
-            self.filename = 'data/Dance/DanceGenVanillaFromSke26.pth'
+            src_transform = transforms.Compose([
+                lambda ske: torch.from_numpy(ske.__array__(reduced=True).flatten()).float().unsqueeze(1).unsqueeze(2)
+        ])
+
+            self.filename = '../data/Dance/DanceGenVanillaFromSke26.pth'
         else:                       # skeleton_image to image
             self.netG = GenNNSkeImToImage()
             src_transform = transforms.Compose([ SkeToImageTransform(image_size),
                                                  transforms.ToTensor(),
                                                  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                                                  ])
-            self.filename = 'data/Dance/DanceGenVanillaFromSkeim.pth'
+            self.filename = '../data/Dance/DanceGenVanillaFromSkeim.pth'
 
 
 
@@ -179,18 +195,45 @@ class GenVanillaNN():
         if loadFromFile and os.path.isfile(self.filename):
             print("GenVanillaNN: Load=", self.filename)
             print("GenVanillaNN: Current Working Directory: ", os.getcwd())
-            self.netG = torch.load(self.filename)
+            self.netG = torch.load(self.filename, weights_only=False)
+
+        print("Loaded model:", type(self.netG))
+
+
 
 
     def train(self, n_epochs=20):
-        # TP-TODO
-        pass
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(self.netG.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    
+        print(f"Training for {n_epochs} epochs...")
+        for epoch in range(n_epochs):
+            running_loss = 0
+            for i, (ske_batch, img_batch) in enumerate(self.dataloader):
+                optimizer.zero_grad()
+                output = self.netG(ske_batch)
+                loss = criterion(output, img_batch)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+            print(f"Epoch {epoch+1}/{n_epochs}, Avg Loss: {running_loss/len(self.dataloader):.4f}")
+        torch.save(self.netG, self.filename)
+        print(f"Training finished. Model saved to {self.filename}")
+ 
+
+    
 
 
     def generate(self, ske):
         """ generator of image from skeleton """
         # TP-TODO
-        pass
+        ske_t = self.dataset.preprocessSkeleton(ske).unsqueeze(0)  # add batch dimension
+        self.netG.eval()
+        with torch.no_grad():
+             output = self.netG(ske_t)
+        return self.dataset.tensor2image(output[0])
+
+
         # ske_t = self.dataset.preprocessSkeleton(ske)
         # ske_t_batch = ske_t.unsqueeze(0)        # make a batch
         # normalized_output = self.netG(ske_t_batch)
@@ -203,16 +246,16 @@ class GenVanillaNN():
 if __name__ == '__main__':
     force = False
     optSkeOrImage = 2           # use as input a skeleton (1) or an image with a skeleton drawed (2)
-    n_epoch = 2000  # 200
-    train = 1 #False
-    #train = True
+    n_epoch = 20  # 200
+    #train = 0 #False
+    train = True
 
     if len(sys.argv) > 1:
         filename = sys.argv[1]
         if len(sys.argv) > 2:
             force = sys.argv[2].lower() == "true"
     else:
-        filename = "data/taichi1.mp4"
+        filename = "../data/taichi1.mp4"
     print("GenVanillaNN: Current Working Directory=", os.getcwd())
     print("GenVanillaNN: Filename=", filename)
     print("GenVanillaNN: Filename=", filename)
@@ -221,10 +264,18 @@ if __name__ == '__main__':
 
     if train:
         # Train
-        gen = GenVanillaNN(targetVideoSke, loadFromFile=False)
+        gen = GenVanillaNN(
+            targetVideoSke,
+            loadFromFile=False,
+            optSkeOrImage=optSkeOrImage
+        )
         gen.train(n_epoch)
     else:
-        gen = GenVanillaNN(targetVideoSke, loadFromFile=True)    # load from file        
+        gen = GenVanillaNN(
+            targetVideoSke,
+            loadFromFile=False,
+            optSkeOrImage=optSkeOrImage
+        )    # load from file        
 
 
     # Test with a second video
